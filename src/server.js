@@ -59,8 +59,8 @@ const allowed_origins = [
   "https://app.socialmediamanagement.app",
   "https://affiliate.socialmediamanagement.app",
   "https://www.app.socialmediamanagement.app",
-  "https://api.socialmediamanagement.app",
-  "https://app.socialmediamanagement.app"
+  "https://app.socialmediamanagement.app",
+  "https://app.roasguard.com"
   // Add your development and production domains here
 ];
 
