@@ -5,5 +5,5 @@ export const FACEBOOK_CONFIG = {
   API_VERSION: "v25.0",
 
   SCOPE:
-    "pages_show_list,business_management,pages_read_engagement,pages_manage_metadata,pages_manage_engagement,pages_manage_posts",
+    "pages_show_list,business_management,pages_read_engagement,pages_read_user_content,pages_manage_engagement",
 };
