@@ -8,7 +8,6 @@ import userRoute from "./api/routes/userRoute.js";
 import facebookRoute from "./api/routes/facebookRoute.js";
 import webhookRoute from "./api/routes/webhookRoute.js";
 import commentRoutes from "./api/routes/commentRoutes.js";
-import loggerRoute from "./api/routes/loggerRoute.js";
 import affiliateRoute from "./api/routes/affiliateRoute.js";
 // Port from properties
 const port = properties.PORT || 5000;
@@ -137,7 +136,6 @@ app.use("/user", userRoute);
 app.use("/facebook", facebookRoute);
 app.use("/webhook", webhookRoute);
 app.use("/api/comments", commentRoutes);
-app.use("/api/logs", loggerRoute);
 app.use("/affiliate", affiliateRoute);
 // Health check endpoint
 app.get("/health", (req, res) => {

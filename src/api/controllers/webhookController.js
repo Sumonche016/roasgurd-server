@@ -6,7 +6,6 @@ import User from "../models/userModels.js";
 import { getPages } from "../services/facebookService.js";
 import { pipeline } from "@huggingface/transformers";
 import Comment from "../models/commentModel.js";
-import Logger from "../models/loggerModel.js";
 
 // In-memory cache to store processed event IDs with expiration
 const processedEvents = new Map();
@@ -80,38 +79,9 @@ export const handleWebhook = async (req, res) => {
               continue;
             }
 
-            // Log initial webhook processing
-            await Logger.create({
-              userId: user?._id,
-              userEmail: user?.email,
-              pageId: pageId,
-              action: "webhook_processing_start",
-              details: {
-                eventType: value?.item || change?.item,
-                verb: value?.verb,
-                commentId: change.value.comment_id,
-                message: change.value.message,
-                from: change.value.from,
-              },
-              status: "info",
-            });
-
             // Skip automation logic for reactions
             if (value?.item === "reaction") {
               console.log("Skipping automation for reaction event");
-              await Logger.create({
-                userId: user._id,
-                userEmail: user.email,
-                pageId: pageId,
-                action: "webhook_reaction-received",
-                details: {
-                  eventType: value?.item || change?.item,
-                  verb: value?.verb,
-                  commentId: change.value.comment_id,
-                  message: `${change.value.reaction_type} reaction received`,
-                },
-                status: "info",
-              });
               continue;
             }
 
@@ -128,17 +98,6 @@ export const handleWebhook = async (req, res) => {
                 console.log(
                   `Skipping auto-reply for comment from page: ${change.value.comment_id}`
                 );
-                await Logger.create({
-                  userId: user?._id,
-                  userEmail: user?.email,
-                  pageId: pageId,
-                  action: "webhook_page_comment_skipped",
-                  details: {
-                    commentId: change.value.comment_id,
-                    reason: "Comment from page itself",
-                  },
-                  status: "info",
-                });
                 continue;
               }
 
@@ -151,38 +110,10 @@ export const handleWebhook = async (req, res) => {
                 const page = pages.find((p) => p.id === pageId);
 
                 if (!page) {
-                  await Logger.create({
-                    userId: user._id,
-                    userEmail: user.email,
-                    pageId: pageId,
-                    action: "webhook_error",
-                    details: {
-                      error: "No page access token found",
-                      pageId: pageId,
-                    },
-                    status: "error",
-                  });
                   throw new Error(
                     `No page access token found for page ${pageId}`
                   );
                 }
-
-                // Log page settings for debugging
-                await Logger.create({
-                  userId: user._id,
-                  userEmail: user.email,
-                  pageId: pageId,
-                  action: "webhook_page_settings",
-                  details: {
-                    hideAll: pageSettings?.settings?.hideAll,
-                    hideByAI: pageSettings?.settings?.hideByAI,
-                    noMatchAction: pageSettings?.settings?.noMatchAction,
-                    hasKeywords: !!pageSettings?.settings?.keywords?.length,
-                    hasKeywordReplies:
-                      !!pageSettings?.settings?.keywordReplies?.length,
-                  },
-                  status: "info",
-                });
 
                 // Add more detailed logging to debug the values
                 console.log("Settings object:", {
@@ -307,54 +238,14 @@ export const handleWebhook = async (req, res) => {
                       `Keyword-based reply sent to comment ${change.value.comment_id}`
                     );
 
-                    // Log successful keyword reply
-                    await Logger.create({
-                      userId: user._id,
-                      userEmail: user.email,
-                      pageId: pageId,
-                      action: "keyword_reply_sent",
-                      details: {
-                        commentId: change.value.comment_id,
-                        replyText: replyText,
-                        matchedKeyword: keywordReply.keywords,
-                      },
-                      status: "success",
-                    });
-
-                    // // Update the existing comment instead of creating a new one
-                    // await Comment.findOneAndUpdate(
-                    //   { commentId: change.value.comment_id },
-                    //   {
-                    //     $set: {
-                    //       autoReply: {
-                    //         message: replyText,
-                    //         createdAt: new Date(),
-                    //       },
-                    //     },
-                    //   },
-                    //   { upsert: true }
-                    // );
-
                     commentData.autoReply = {
                       message: replyText,
                       createdAt: new Date(),
-                      replyId: response.data.id, // Store Facebook's reply ID
+                      replyId: response.data.id,
                     };
 
                     console.log("Comment updated with reply");
                   } catch (error) {
-                    // Log error in keyword reply
-                    await Logger.create({
-                      userId: user._id,
-                      userEmail: user.email,
-                      pageId: pageId,
-                      action: "keyword_reply_error",
-                      details: {
-                        commentId: change.value.comment_id,
-                        error: error.message,
-                      },
-                      status: "error",
-                    });
                     console.error(
                       "Error sending keyword-based reply:",
                       error.response?.data
@@ -384,32 +275,7 @@ export const handleWebhook = async (req, res) => {
                       console.log(
                         `Comment ${change.value.comment_id} hidden due to no keyword match`
                       );
-
-                      // Log successful hide
-                      await Logger.create({
-                        userId: user._id,
-                        userEmail: user.email,
-                        pageId: pageId,
-                        action: "comment_hidden",
-                        details: {
-                          commentId: change.value.comment_id,
-                          reason: "no_keyword_match",
-                        },
-                        status: "success",
-                      });
                     } catch (error) {
-                      // Log hide error
-                      await Logger.create({
-                        userId: user._id,
-                        userEmail: user.email,
-                        pageId: pageId,
-                        action: "hide_error",
-                        details: {
-                          commentId: change.value.comment_id,
-                          error: error.message,
-                        },
-                        status: "error",
-                      });
                       console.error(
                         "Error hiding comment:",
                         error.response?.data
@@ -433,7 +299,7 @@ export const handleWebhook = async (req, res) => {
                       commentData.autoReply = {
                         message: defaultReplyText,
                         createdAt: new Date(),
-                        replyId: response.data.id, // Store Facebook's reply ID
+                        replyId: response.data.id,
                       };
 
                       console.log(
@@ -478,7 +344,7 @@ export const handleWebhook = async (req, res) => {
 
                   while (retryCount < maxRetries && !hideSuccess) {
                     try {
-                      const hideResponse = await axios.post(
+                      await axios.post(
                         `https://graph.facebook.com/v18.0/${change.value.comment_id}`,
                         {
                           is_hidden: true,
@@ -487,95 +353,23 @@ export const handleWebhook = async (req, res) => {
                       );
                       commentData.isHidden = true;
                       hideSuccess = true;
-
-                      await Logger.create({
-                        userId: user._id,
-                        userEmail: user.email,
-                        pageId: pageId,
-                        action: "comment_hide_success",
-                        details: {
-                          commentId: change.value.comment_id,
-                          reason: shouldHideByAI
-                            ? "AI sentiment"
-                            : "hideAll setting",
-                          response: hideResponse.data,
-                          attempt: retryCount + 1,
-                        },
-                        status: "success",
-                      });
                     } catch (error) {
                       // Check for duplicate spam marking error
                       const isDuplicateSpamError =
                         error.response?.data?.error?.error_subcode === 1446036;
 
                       if (isDuplicateSpamError) {
-                        // If it's already marked as spam, we'll consider this a success
                         commentData.isHidden = true;
                         hideSuccess = true;
-                        await Logger.create({
-                          userId: user._id,
-                          userEmail: user.email,
-                          pageId: pageId,
-                          action: "comment_already_hidden",
-                          details: {
-                            commentId: change.value.comment_id,
-                            reason: "Comment was already marked as spam",
-                            originalError: error.response?.data?.error,
-                            attempt: retryCount + 1,
-                          },
-                          status: "info",
-                        });
                       } else {
                         retryCount++;
 
-                        // Log the retry attempt
-                        await Logger.create({
-                          userId: user._id,
-                          userEmail: user.email,
-                          pageId: pageId,
-                          action: "comment_hide_retry",
-                          details: {
-                            commentId: change.value.comment_id,
-                            attempt: retryCount,
-                            maxRetries: maxRetries,
-                            error: error.response?.data || error.message,
-                            errorCode: error.response?.status,
-                            errorSubcode:
-                              error.response?.data?.error?.error_subcode,
-                            errorType: error.response?.data?.error?.type,
-                            errorMessage: error.response?.data?.error?.message,
-                          },
-                          status: retryCount < maxRetries ? "warning" : "error",
-                        });
-
                         if (retryCount < maxRetries) {
-                          // Wait for a short time before retrying (exponential backoff)
+                          // Exponential backoff
                           await new Promise((resolve) =>
                             setTimeout(resolve, Math.pow(2, retryCount) * 1000)
                           );
                         } else {
-                          // Final failure after all retries
-                          await Logger.create({
-                            userId: user._id,
-                            userEmail: user.email,
-                            pageId: pageId,
-                            action: "comment_hide_failed",
-                            details: {
-                              commentId: change.value.comment_id,
-                              reason: shouldHideByAI
-                                ? "AI sentiment"
-                                : "hideAll setting",
-                              error: error.response?.data || error.message,
-                              errorCode: error.response?.status,
-                              errorSubcode:
-                                error.response?.data?.error?.error_subcode,
-                              errorType: error.response?.data?.error?.type,
-                              errorMessage:
-                                error.response?.data?.error?.message,
-                              attempts: retryCount,
-                            },
-                            status: "error",
-                          });
                           console.error(
                             "Error hiding comment after all retries:",
                             error.response?.data
@@ -589,7 +383,7 @@ export const handleWebhook = async (req, res) => {
                   if (!hideSuccess) {
                     try {
                       // Try to mark as spam instead of hiding
-                      const spamResponse = await axios.post(
+                      await axios.post(
                         `https://graph.facebook.com/v18.0/${change.value.comment_id}`,
                         {
                           is_spam: true,
@@ -597,31 +391,11 @@ export const handleWebhook = async (req, res) => {
                         }
                       );
                       commentData.isHidden = true;
-
-                      await Logger.create({
-                        userId: user._id,
-                        userEmail: user.email,
-                        pageId: pageId,
-                        action: "comment_marked_spam",
-                        details: {
-                          commentId: change.value.comment_id,
-                          reason: "Fallback method after hide failed",
-                          response: spamResponse.data,
-                        },
-                        status: "success",
-                      });
                     } catch (spamError) {
-                      await Logger.create({
-                        userId: user._id,
-                        userEmail: user.email,
-                        pageId: pageId,
-                        action: "comment_spam_failed",
-                        details: {
-                          commentId: change.value.comment_id,
-                          error: spamError.response?.data || spamError.message,
-                        },
-                        status: "error",
-                      });
+                      console.error(
+                        "Error marking comment as spam:",
+                        spamError.response?.data
+                      );
                     }
                   }
                 }
@@ -658,20 +432,6 @@ export const handleWebhook = async (req, res) => {
                 const comment = new Comment(commentData);
                 await comment.save();
 
-                // Log successful comment save
-                await Logger.create({
-                  userId: user._id,
-                  userEmail: user.email,
-                  pageId: pageId,
-                  action: "comment_saved",
-                  details: {
-                    commentId: commentData.commentId,
-                    isHidden: commentData.isHidden,
-                    hasAutoReply: !!commentData.autoReply,
-                  },
-                  status: "success",
-                });
-
                 // Emit the new comment event with clean data
                 const cleanCommentData = {
                   ...comment.toObject(),
@@ -690,31 +450,9 @@ export const handleWebhook = async (req, res) => {
                 });
               }
             } catch (error) {
-              await Logger.create({
-                userId: user?._id,
-                userEmail: user?.email,
-                pageId: pageId,
-                action: "webhook_processing_error",
-                details: {
-                  error: error.message,
-                  stack: error.stack,
-                  commentId: change.value.comment_id,
-                },
-                status: "error",
-              });
               console.error("Error processing comment:", error);
             }
           } else {
-            await Logger.create({
-              pageId: pageId,
-              action: "webhook_skipped",
-              details: {
-                reason: "Non-comment or non-add event",
-                eventType: value?.item,
-                verb: value?.verb,
-              },
-              status: "info",
-            });
             console.log(
               `Skipping non-comment or non-add event: ${value?.item} - ${value?.verb}`
             );
