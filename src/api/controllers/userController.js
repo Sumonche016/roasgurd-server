@@ -4,6 +4,7 @@ import User from "../models/userModels.js";
 import dotenv from "dotenv";
 import fetch from "node-fetch";
 import Comment from "../models/commentModel.js";
+import { FACEBOOK_CONFIG } from "../../config/facebook.js";
 import {
   startUserMonitoring,
   stopUserMonitoring,
@@ -195,16 +196,15 @@ const resetPassword = async (req, res) => {
   }
 };
 
+// Deprecated client-SDK connect flow. Kept only so old frontend builds don't
+// hard-fail; upserts into the same facebookAccounts[] array as the server-side
+// OAuth flow in facebookController.callbackHandler.
 export const saveFacebookToken = async (req, res) => {
   try {
     const { accessToken, facebookId, userId } = req.body;
-    console.log(req.body);
 
-    //  long-lived token
-    const appId = "1094522522083772";
-    const appSecret = "ddcafc14420096fa9073dad831e6b0b4";
     const longLivedTokenResponse = await fetch(
-      `https://graph.facebook.com/v16.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${appId}&client_secret=${appSecret}&fb_exchange_token=${accessToken}`
+      `https://graph.facebook.com/v16.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${FACEBOOK_CONFIG.APP_ID}&client_secret=${FACEBOOK_CONFIG.APP_SECRET}&fb_exchange_token=${accessToken}`
     );
     const longLivedTokenData = await longLivedTokenResponse.json();
 
@@ -217,16 +217,25 @@ export const saveFacebookToken = async (req, res) => {
 
     const longLivedAccessToken = longLivedTokenData.access_token;
 
-    const updatedUser = await User.findByIdAndUpdate(
-      { _id: userId },
-      { accessToken: longLivedAccessToken, facebookId },
-      { new: true }
-    );
-
-    if (!updatedUser) {
+    const user = await User.findById(userId);
+    if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
 
+    const accountIndex = user.facebookAccounts.findIndex(
+      (a) => a.fbUserId === facebookId
+    );
+    if (accountIndex === -1) {
+      user.facebookAccounts.push({
+        fbUserId: facebookId,
+        accessToken: longLivedAccessToken,
+        isPrimary: user.facebookAccounts.length === 0,
+      });
+    } else {
+      user.facebookAccounts[accountIndex].accessToken = longLivedAccessToken;
+    }
+
+    await user.save();
     res.status(200).json({ message: "Facebook token saved successfully" });
   } catch (error) {
     console.error("Error saving Facebook token:", error);
@@ -237,16 +246,22 @@ export const saveFacebookToken = async (req, res) => {
 export const getUserPages = async (req, res) => {
   try {
     const userId = req.params.userId;
+    const { accountId } = req.query;
     const user = await User.findById(userId);
 
-    if (!user || !user.accessToken) {
+    const account = accountId
+      ? user?.facebookAccounts.find((a) => a.fbUserId === accountId)
+      : user?.facebookAccounts.find((a) => a.isPrimary) ||
+        user?.facebookAccounts[0];
+
+    if (!user || !account) {
       return res
         .status(400)
-        .json({ message: "User not found or no access token available" });
+        .json({ message: "User not found or no Facebook account connected" });
     }
 
     const response = await fetch(
-      `https://graph.facebook.com/v16.0/me/accounts?fields=id,name,access_token&access_token=${user.accessToken}`
+      `https://graph.facebook.com/v16.0/me/accounts?fields=id,name,access_token&access_token=${account.accessToken}`
     );
     const data = await response.json();
 
@@ -269,13 +284,21 @@ const getFacebookData = async (url, accessToken) => {
   return response.json();
 };
 
+// Resolves which connected Facebook account's token to use for legacy,
+// not-yet-account-scoped ad/comment endpoints: the primary account, or the
+// first connected one if none is marked primary.
+const getPrimaryAccountToken = (user) =>
+  (user.facebookAccounts?.find((a) => a.isPrimary) ||
+    user.facebookAccounts?.[0])?.accessToken;
+
 export const getPageComments = async (req, res) => {
   try {
     const { pageId } = req.params;
     const userId = req.userId; // Assuming you have middleware to extract userId from token
     const user = await User.findById(userId);
+    const accessToken = user && getPrimaryAccountToken(user);
 
-    if (!user || !user.accessToken) {
+    if (!accessToken) {
       return res
         .status(400)
         .json({ message: "User not found or no access token available" });
@@ -284,7 +307,7 @@ export const getPageComments = async (req, res) => {
     // Step 1: Get owned ad accounts
     const adAccountsData = await getFacebookData(
       `https://graph.facebook.com/v16.0/${pageId}/owned_ad_accounts`,
-      user.accessToken
+      accessToken
     );
     if (!adAccountsData.data || adAccountsData.data.length === 0) {
       return res.status(404).json({ message: "No ad accounts found" });
@@ -295,7 +318,7 @@ export const getPageComments = async (req, res) => {
     // Step 2: Get ads for the ad account
     const adsData = await getFacebookData(
       `https://graph.facebook.com/v16.0/${adAccountId}/ads?fields=id,name,adcreatives{object_story_id}`,
-      user.accessToken
+      accessToken
     );
     if (!adsData.data || adsData.data.length === 0) {
       return res.status(404).json({ message: "No ads found" });
@@ -306,7 +329,7 @@ export const getPageComments = async (req, res) => {
     // Step 3: Get ad details
     const adDetailsData = await getFacebookData(
       `https://graph.facebook.com/v16.0/${adId}?fields=object_story_id,effective_object_story_id,object_type,title,body`,
-      user.accessToken
+      accessToken
     );
     if (!adDetailsData.effective_object_story_id) {
       return res
@@ -319,7 +342,7 @@ export const getPageComments = async (req, res) => {
     // Step 4: Get comments
     const commentsData = await getFacebookData(
       `https://graph.facebook.com/v16.0/${effectiveObjectStoryId}/comments?fields=id,message,created_time,is_hidden`,
-      user.accessToken
+      accessToken
     );
 
     res.json(commentsData.data);
@@ -334,15 +357,16 @@ export const getPageAdAccounts = async (req, res) => {
     const { pageId } = req.params;
     // Get userId from req.userId which is set by verifyToken middleware
     const user = await User.findById(req.userId);
+    const accessToken = user && getPrimaryAccountToken(user);
 
-    if (!user || !user.accessToken) {
+    if (!accessToken) {
       return res.status(400).json({
         message: "User not found or no access token available",
       });
     }
 
     const response = await fetch(
-      `https://graph.facebook.com/v16.0/${pageId}?fields=business&access_token=${user.accessToken}`
+      `https://graph.facebook.com/v16.0/${pageId}?fields=business&access_token=${accessToken}`
     );
     const data = await response.json();
 
@@ -364,15 +388,16 @@ export const getBusinessAdAccounts = async (req, res) => {
   try {
     const { businessId } = req.params;
     const user = await User.findById(req.userId);
+    const accessToken = user && getPrimaryAccountToken(user);
 
-    if (!user || !user.accessToken) {
+    if (!accessToken) {
       return res.status(400).json({
         message: "User not found or no access token available",
       });
     }
 
     const response = await fetch(
-      `https://graph.facebook.com/v16.0/${businessId}/owned_ad_accounts?fields=account_id,name,account_status,disable_reason&access_token=${user.accessToken}`
+      `https://graph.facebook.com/v16.0/${businessId}/owned_ad_accounts?fields=account_id,name,account_status,disable_reason&access_token=${accessToken}`
     );
     const data = await response.json();
 
@@ -394,8 +419,9 @@ export const getAdAccountEngagements = async (req, res) => {
   try {
     const { accountId } = req.params;
     const user = await User.findById(req.userId);
+    const accessToken = user && getPrimaryAccountToken(user);
 
-    if (!user || !user.accessToken) {
+    if (!accessToken) {
       return res.status(400).json({
         message: "User not found or no access token available",
       });
@@ -405,7 +431,7 @@ export const getAdAccountEngagements = async (req, res) => {
     const actId = accountId.startsWith("act_") ? accountId : `act_${accountId}`;
 
     const response = await fetch(
-      `https://graph.facebook.com/v16.0/${actId}/ads?fields=id,name,adcreatives{object_story_id}&access_token=${user.accessToken}`
+      `https://graph.facebook.com/v16.0/${actId}/ads?fields=id,name,adcreatives{object_story_id}&access_token=${accessToken}`
     );
     const data = await response.json();
 
@@ -623,7 +649,9 @@ export const hideCommentsByKeywords = async (req, res) => {
     // Get all comments first
     const creativeId = req.query.creativeId;
     const creativeResponse = await fetch(
-      `https://graph.facebook.com/v16.0/${creativeId}?fields=object_story_id,effective_object_story_id&access_token=${user.accessToken}`
+      `https://graph.facebook.com/v16.0/${creativeId}?fields=object_story_id,effective_object_story_id&access_token=${getPrimaryAccountToken(
+        user
+      )}`
     );
     const creativeData = await creativeResponse.json();
 
@@ -1174,27 +1202,28 @@ export const updateDefaultReplyText = async (req, res) => {
 export const updateSelectedPage = async (req, res) => {
   try {
     const { userId } = req.params;
-    const { pageId, pageName, accessToken } = req.body;
+    const { pageId, pageName, accessToken, accountId } = req.body;
 
-    const user = await User.findByIdAndUpdate(
-      userId,
-      {
-        selectedPage: {
-          pageId,
-          pageName,
-          accessToken,
-        },
-      },
-      { new: true }
-    );
-
+    const user = await User.findById(userId);
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
 
+    const account = accountId
+      ? user.facebookAccounts.find((a) => a.fbUserId === accountId)
+      : user.facebookAccounts.find((a) => a.isPrimary) ||
+        user.facebookAccounts[0];
+
+    if (!account) {
+      return res.status(404).json({ message: "Facebook account not found" });
+    }
+
+    account.selectedPage = { pageId, pageName, accessToken };
+    await user.save();
+
     res.status(200).json({
       message: "Selected page updated successfully",
-      selectedPage: user.selectedPage,
+      selectedPage: account.selectedPage,
     });
   } catch (error) {
     console.error("Error updating selected page:", error);
@@ -1205,13 +1234,19 @@ export const updateSelectedPage = async (req, res) => {
 export const getSelectedPage = async (req, res) => {
   try {
     const { userId } = req.params;
+    const { accountId } = req.query;
     const user = await User.findById(userId);
 
     if (!user) {
       return res.status(404).json({ message: "User not found" });
     }
 
-    res.status(200).json(user.selectedPage);
+    const account = accountId
+      ? user.facebookAccounts.find((a) => a.fbUserId === accountId)
+      : user.facebookAccounts.find((a) => a.isPrimary) ||
+        user.facebookAccounts[0];
+
+    res.status(200).json(account?.selectedPage || null);
   } catch (error) {
     console.error("Error getting selected page:", error);
     res.status(500).json({ message: "Server error", error: error.message });

@@ -106,7 +106,17 @@ export const handleWebhook = async (req, res) => {
                   (p) => p.pageId === pageId
                 );
                 console.log("page setting", pageSettings);
-                const pages = await getPages(user.accessToken);
+
+                const account = user.facebookAccounts.find(
+                  (a) => a.fbUserId === pageSettings?.fbUserId
+                );
+                if (!account) {
+                  throw new Error(
+                    `No Facebook account found owning page ${pageId}`
+                  );
+                }
+
+                const pages = await getPages(account.accessToken, account.fbUserId);
                 const page = pages.find((p) => p.id === pageId);
 
                 if (!page) {

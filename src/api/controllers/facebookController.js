@@ -2,6 +2,7 @@ import {
   getFacebookAuthUrl,
   exchangeCodeForToken,
   getLongLivedUserToken,
+  getFacebookProfile,
   getPages,
 } from "../services/facebookService.js";
 import properties from "../../config/properties.js";
@@ -9,11 +10,14 @@ import User from "../models/userModels.js";
 import axios from "axios";
 
 export const loginHandler = async (req, res) => {
-  const { userId } = req.query;
+  const { userId, mode } = req.query;
   if (!userId) {
     return res.status(400).json({ error: "User ID is required" });
   }
-  const authUrl = getFacebookAuthUrl(userId);
+  // mode=add forces Facebook to prompt for login/account choice instead of
+  // silently reusing whatever FB account is already active in the browser.
+  const state = encodeURIComponent(JSON.stringify({ userId, mode }));
+  const authUrl = getFacebookAuthUrl(state, mode);
   res.redirect(authUrl);
 };
 
@@ -27,15 +31,20 @@ export const callbackHandler = async (req, res) => {
       throw new Error("No state parameter provided");
     }
 
-    const userId = decodeURIComponent(state);
+    const { userId } = JSON.parse(decodeURIComponent(state));
 
     const shortLivedToken = await exchangeCodeForToken(code);
 
     // Exchange for long-lived token
     const longLivedToken = await getLongLivedUserToken(shortLivedToken);
 
-    // Fetch and store pages
-    const pages = await getPages(longLivedToken);
+    // Identify which Facebook account just logged in
+    const fbProfile = await getFacebookProfile(longLivedToken);
+    const fbUserId = fbProfile.id;
+    const fbName = fbProfile.name;
+
+    // Fetch and store pages for this Facebook account only
+    const pages = await getPages(longLivedToken, fbUserId);
 
     // Subscribe each page to webhooks before saving
     for (const page of pages) {
@@ -59,34 +68,70 @@ export const callbackHandler = async (req, res) => {
       }
     }
 
-    // Get existing user data to preserve settings
     const existingUser = await User.findById(userId);
-    const existingPageSettings = existingUser?.pageSettings || [];
+    if (!existingUser) {
+      throw new Error("User not found");
+    }
 
-    // Create a map of existing page settings for easy lookup
-    const existingSettingsMap = new Map(
-      existingPageSettings.map((page) => [page.pageId, page])
+    // A page can only belong to one connected Facebook account. If a page
+    // returned by this login already belongs to a different account on this
+    // user, leave it there and skip re-assigning it here.
+    const pagesOwnedElsewhere = new Set(
+      existingUser.pageSettings
+        .filter((p) => p.fbUserId && p.fbUserId !== fbUserId)
+        .map((p) => p.pageId)
     );
 
-    // Merge new pages with existing settings
-    const mergedPageSettings = pages.map((page) => {
-      const existingPage = existingSettingsMap.get(page.id);
-      return {
-        pageId: page.id,
-        pageName: page.name,
-        settings: existingPage?.settings || {
-          hideByKeyword: false,
-          hideAll: false,
-          hideByAI: false,
-          autoReply: false,
-        },
-      };
-    });
+    const existingSettingsMap = new Map(
+      existingUser.pageSettings.map((page) => [page.pageId, page])
+    );
 
-    await User.findByIdAndUpdate(userId, {
-      accessToken: longLivedToken,
-      pageSettings: mergedPageSettings,
-    });
+    const thisAccountPageSettings = pages
+      .filter((page) => !pagesOwnedElsewhere.has(page.id))
+      .map((page) => {
+        const existingPage = existingSettingsMap.get(page.id);
+        return {
+          pageId: page.id,
+          pageName: page.name,
+          fbUserId,
+          settings: existingPage?.settings || {
+            hideByKeyword: false,
+            hideAll: false,
+            hideByAI: false,
+            autoReply: false,
+          },
+        };
+      });
+
+    // Keep pages belonging to other accounts untouched, replace only this
+    // account's pages with the freshly fetched set.
+    const otherAccountsPageSettings = existingUser.pageSettings.filter(
+      (p) => p.fbUserId && p.fbUserId !== fbUserId
+    );
+
+    const mergedPageSettings = [
+      ...otherAccountsPageSettings,
+      ...thisAccountPageSettings,
+    ];
+
+    const accountIndex = existingUser.facebookAccounts.findIndex(
+      (a) => a.fbUserId === fbUserId
+    );
+
+    if (accountIndex === -1) {
+      existingUser.facebookAccounts.push({
+        fbUserId,
+        fbName,
+        accessToken: longLivedToken,
+        isPrimary: existingUser.facebookAccounts.length === 0,
+      });
+    } else {
+      existingUser.facebookAccounts[accountIndex].accessToken = longLivedToken;
+      existingUser.facebookAccounts[accountIndex].fbName = fbName;
+    }
+
+    existingUser.pageSettings = mergedPageSettings;
+    await existingUser.save();
 
     res.redirect(`${properties.FRONTEND_URL}?success=true`);
   } catch (error) {
@@ -99,7 +144,7 @@ export const callbackHandler = async (req, res) => {
 
 export const getPagesHandler = async (req, res) => {
   try {
-    const userId = req.query.userId; // Add userId parameter to the request
+    const { userId, accountId } = req.query;
     if (!userId) {
       return res.status(400).json({ error: "User ID is required" });
     }
@@ -109,10 +154,91 @@ export const getPagesHandler = async (req, res) => {
       return res.json([]);
     }
 
-    res.json(user.pageSettings);
+    const pages = accountId
+      ? user.pageSettings.filter((p) => p.fbUserId === accountId)
+      : user.pageSettings;
+
+    res.json(pages);
   } catch (error) {
     console.error("Failed to fetch pages:", error);
     res.status(500).json({ error: "Failed to fetch pages" });
+  }
+};
+
+export const listAccountsHandler = async (req, res) => {
+  try {
+    const { userId } = req.query;
+    if (!userId) {
+      return res.status(400).json({ error: "User ID is required" });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const accounts = user.facebookAccounts.map((a) => ({
+      fbUserId: a.fbUserId,
+      fbName: a.fbName,
+      isPrimary: a.isPrimary,
+    }));
+
+    res.json(accounts);
+  } catch (error) {
+    console.error("Failed to list facebook accounts:", error);
+    res.status(500).json({ error: "Failed to list facebook accounts" });
+  }
+};
+
+export const deleteAccountHandler = async (req, res) => {
+  try {
+    const { userId, fbUserId } = req.params;
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    user.facebookAccounts = user.facebookAccounts.filter(
+      (a) => a.fbUserId !== fbUserId
+    );
+    user.pageSettings = user.pageSettings.filter(
+      (p) => p.fbUserId !== fbUserId
+    );
+
+    await user.save();
+    res.json({ message: "Facebook account removed" });
+  } catch (error) {
+    console.error("Failed to delete facebook account:", error);
+    res.status(500).json({ error: "Failed to delete facebook account" });
+  }
+};
+
+export const setPrimaryAccountHandler = async (req, res) => {
+  try {
+    const { userId, fbUserId } = req.params;
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const targetExists = user.facebookAccounts.some(
+      (a) => a.fbUserId === fbUserId
+    );
+    if (!targetExists) {
+      return res.status(404).json({ error: "Facebook account not found" });
+    }
+
+    user.facebookAccounts.forEach((a) => {
+      a.isPrimary = a.fbUserId === fbUserId;
+    });
+
+    await user.save();
+    res.json({ message: "Primary facebook account updated" });
+  } catch (error) {
+    console.error("Failed to set primary facebook account:", error);
+    res.status(500).json({ error: "Failed to set primary facebook account" });
   }
 };
 

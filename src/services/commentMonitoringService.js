@@ -38,6 +38,26 @@ const monitorUserComments = async (userId) => {
       return;
     }
 
+    // The monitored page belongs to exactly one connected Facebook account —
+    // resolve that account's user token instead of relying on a single
+    // account per user.
+    const ownerPageSettings = user.pageSettings.find(
+      (p) => p.pageId === user.addedPage?.id
+    );
+    const account =
+      user.facebookAccounts.find(
+        (a) => a.fbUserId === ownerPageSettings?.fbUserId
+      ) ||
+      user.facebookAccounts.find((a) => a.isPrimary) ||
+      user.facebookAccounts[0];
+    const userAccessToken = account?.accessToken;
+    if (!userAccessToken) {
+      console.log(
+        `[${new Date().toISOString()}] No Facebook account token found for ${userId}`
+      );
+      return;
+    }
+
     // Replace API call with stored adAccountId
     const adAccountId = user.commentMonitoring?.adAccountId;
     console.log(adAccountId, "add account");
@@ -54,7 +74,7 @@ const monitorUserComments = async (userId) => {
 
     try {
       const engagementsResponse = await fetch(
-        `https://graph.facebook.com/v16.0/act_${adAccountId}/ads?fields=id,name,adcreatives{object_story_id}&access_token=${user.accessToken}`
+        `https://graph.facebook.com/v16.0/act_${adAccountId}/ads?fields=id,name,adcreatives{object_story_id}&access_token=${userAccessToken}`
       );
       const engagementsData = await engagementsResponse.json();
 

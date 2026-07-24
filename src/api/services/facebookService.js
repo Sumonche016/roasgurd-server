@@ -3,13 +3,24 @@ import properties from "../../config/properties.js";
 import { FACEBOOK_CONFIG } from "../../config/facebook.js";
 import pageToken from "../models/pageToken.js";
 
-export const getFacebookAuthUrl = (userId) => {
+export const getFacebookAuthUrl = (userId, mode) => {
   const redirectUri = encodeURIComponent(
     `${properties.BASE_URL}/facebook/callback`
   );
   const state = encodeURIComponent(userId);
+  const reauth = mode === "add" ? "&auth_type=reauthenticate" : "";
 
-  return `https://www.facebook.com/${FACEBOOK_CONFIG.API_VERSION}/dialog/oauth?client_id=${FACEBOOK_CONFIG.APP_ID}&redirect_uri=${redirectUri}&scope=${FACEBOOK_CONFIG.SCOPE}&state=${state}`;
+  return `https://www.facebook.com/${FACEBOOK_CONFIG.API_VERSION}/dialog/oauth?client_id=${FACEBOOK_CONFIG.APP_ID}&redirect_uri=${redirectUri}&scope=${FACEBOOK_CONFIG.SCOPE}&state=${state}${reauth}`;
+};
+
+export const getFacebookProfile = async (userAccessToken) => {
+  const response = await axios.get(
+    `https://graph.facebook.com/${FACEBOOK_CONFIG.API_VERSION}/me`,
+    {
+      params: { fields: "id,name", access_token: userAccessToken },
+    }
+  );
+  return response.data; // { id, name }
 };
 
 export const exchangeCodeForToken = async (code) => {
@@ -25,7 +36,7 @@ export const exchangeCodeForToken = async (code) => {
   return response.data.access_token;
 };
 
-export const getPages = async (userAccessToken) => {
+export const getPages = async (userAccessToken, fbUserId) => {
   const response = await axios.get(
     `https://graph.facebook.com/${FACEBOOK_CONFIG.API_VERSION}/me/accounts`,
     {
@@ -33,18 +44,21 @@ export const getPages = async (userAccessToken) => {
     }
   );
 
-  // Store pages in database
+  // Store pages in database, scoped to the owning Facebook account
   const pages = response.data.data;
-  for (const page of pages) {
-    await pageToken.findOneAndUpdate(
-      { pageId: page.id },
-      {
-        pageId: page.id,
-        pageName: page.name,
-        accessToken: page.access_token,
-      },
-      { upsert: true }
-    );
+  if (fbUserId) {
+    for (const page of pages) {
+      await pageToken.findOneAndUpdate(
+        { fbUserId, pageId: page.id },
+        {
+          fbUserId,
+          pageId: page.id,
+          pageName: page.name,
+          accessToken: page.access_token,
+        },
+        { upsert: true }
+      );
+    }
   }
 
   return pages;

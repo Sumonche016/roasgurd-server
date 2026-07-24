@@ -5,7 +5,6 @@ const userSchema = new mongoose.Schema(
     username: { type: String, required: true },
     email: { type: String, required: true, unique: true },
     password: { type: String, required: true },
-    accessToken: String,
     // User roles
     isCommentEnabled: { type: Boolean, default: false },
     customUsd: { type: Number, default: 0 },
@@ -30,16 +29,25 @@ const userSchema = new mongoose.Schema(
     cancelSubscriptionRequest: { type: Boolean, default: false },
     cancelSubscriptionRequestDate: { type: Date },
 
-    selectedPage: {
-      pageId: String,
-      pageName: String,
-      accessToken: String,
-    },
+    facebookAccounts: [
+      {
+        fbUserId: { type: String, required: true },
+        fbName: String,
+        accessToken: { type: String, required: true },
+        isPrimary: { type: Boolean, default: false },
+        selectedPage: {
+          pageId: String,
+          pageName: String,
+          accessToken: String,
+        },
+      },
+    ],
 
     pageSettings: [
       {
         pageId: { type: String, required: true },
         pageName: { type: String, required: true },
+        fbUserId: { type: String, required: true },
         settings: {
           hideByKeyword: { type: Boolean, default: false },
           hideAll: { type: Boolean, default: false },
