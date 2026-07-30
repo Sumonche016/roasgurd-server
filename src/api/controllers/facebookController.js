@@ -43,6 +43,27 @@ export const callbackHandler = async (req, res) => {
     const fbUserId = fbProfile.id;
     const fbName = fbProfile.name;
 
+    const existingUser = await User.findById(userId);
+    if (!existingUser) {
+      throw new Error("User not found");
+    }
+
+    const isNewAccount = !existingUser.facebookAccounts.some(
+      (a) => a.fbUserId === fbUserId
+    );
+
+    if (
+      isNewAccount &&
+      existingUser.facebookAccounts.length >=
+        (existingUser.maxFacebookAccounts || 1)
+    ) {
+      return res.redirect(
+        `${properties.FRONTEND_URL}?error=${encodeURIComponent(
+          "Facebook account limit reached. Ask your admin to increase your limit."
+        )}`
+      );
+    }
+
     // Fetch and store pages for this Facebook account only
     const pages = await getPages(longLivedToken, fbUserId);
 
@@ -66,11 +87,6 @@ export const callbackHandler = async (req, res) => {
         );
         // Continue with other pages even if one fails
       }
-    }
-
-    const existingUser = await User.findById(userId);
-    if (!existingUser) {
-      throw new Error("User not found");
     }
 
     // A page can only belong to one connected Facebook account. If a page

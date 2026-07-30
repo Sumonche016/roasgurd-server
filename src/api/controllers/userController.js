@@ -124,6 +124,14 @@ const updateUser = async (req, res) => {
   const updates = req.body;
 
   try {
+    // maxFacebookAccounts is admin-only: strip it unless the requester is an admin
+    if (typeof updates.maxFacebookAccounts !== "undefined") {
+      const requester = await User.findById(req.userId);
+      if (!requester?.isAdmin) {
+        delete updates.maxFacebookAccounts;
+      }
+    }
+
     // If paidPlan is being updated, set paymentDate to now
     if (
       (typeof updates.paidPlan !== "undefined" && updates.paidPlan !== null) ||
@@ -226,6 +234,12 @@ export const saveFacebookToken = async (req, res) => {
       (a) => a.fbUserId === facebookId
     );
     if (accountIndex === -1) {
+      if (user.facebookAccounts.length >= (user.maxFacebookAccounts || 1)) {
+        return res.status(403).json({
+          message:
+            "Facebook account limit reached. Ask your admin to increase your limit.",
+        });
+      }
       user.facebookAccounts.push({
         fbUserId: facebookId,
         accessToken: longLivedAccessToken,

@@ -8,6 +8,8 @@ const userSchema = new mongoose.Schema(
     // User roles
     isCommentEnabled: { type: Boolean, default: false },
     customUsd: { type: Number, default: 0 },
+    // Admin-controlled cap on how many Facebook accounts this user may connect
+    maxFacebookAccounts: { type: Number, default: 1 },
     isAdmin: { type: Boolean, default: false },
     isApproved: { type: Boolean, default: true },
     paused: { type: Boolean, default: false },
